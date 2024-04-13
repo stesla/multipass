@@ -2,17 +2,20 @@ package main
 
 import (
 	"io"
-	"log"
+	"net"
 	"strings"
 
-	"net"
-
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/stesla/telnet"
+	"golang.org/x/text/encoding/unicode"
 )
 
 func main() {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+
 	pflag.String("address", ":2300", "the address to listen on")
 	viper.BindPFlag("address", pflag.Lookup("address"))
 
@@ -24,7 +27,7 @@ func main() {
 	case viper.ConfigFileNotFoundError:
 	case nil:
 	default:
-		log.Fatalln("fatal error reading confi1g file:", err)
+		log.Fatal().Err(err).Msg("fatal error reading config file")
 	}
 
 	viper.SetEnvPrefix("multipass")
@@ -33,14 +36,42 @@ func main() {
 
 	listener, err := net.Listen("tcp", viper.GetString("address"))
 	if err != nil {
-		log.Fatalln("fatal error binding to address:", err)
+		log.Fatal().Err(err).Msg("fatal error binding to address")
 	}
 	for {
 		tcpconn, err := listener.Accept()
 		if err != nil {
-			log.Println("error accepting connection:", err)
+			log.Info().Err(err).Msg("error accepting connection")
 		}
+		log.Info().Str("address", tcpconn.RemoteAddr().String()).Msg("incoming connection")
+
 		conn := telnet.Server(tcpconn)
+
+		conn.AddListener("update-option", telnet.FuncListener{
+			Func: func(event any) {
+				switch t := event.(type) {
+				case telnet.UpdateOptionEvent:
+					switch opt := t.Option; opt.Byte() {
+					case telnet.Charset:
+						if t.WeChanged && opt.EnabledForUs() {
+							t.Conn().RequestEncoding(unicode.UTF8)
+						}
+					}
+				}
+			},
+		})
+
+		for _, opt := range []telnet.Option{
+			telnet.NewSuppressGoAheadOption(),
+			telnet.NewTransmitBinaryOption(),
+			telnet.NewCharsetOption(true),
+		} {
+			opt.Allow(true, true)
+			conn.BindOption(opt)
+			conn.EnableOptionForThem(opt.Byte(), true)
+			conn.EnableOptionForUs(opt.Byte(), true)
+		}
+
 		go io.Copy(conn, conn)
 	}
 }

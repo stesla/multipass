@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"net"
 	"strings"
 
@@ -10,7 +9,6 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/stesla/telnet"
-	"golang.org/x/text/encoding/unicode"
 )
 
 func main() {
@@ -43,35 +41,21 @@ func main() {
 		if err != nil {
 			log.Info().Err(err).Msg("error accepting connection")
 		}
-		log.Info().Str("address", tcpconn.RemoteAddr().String()).Msg("incoming connection")
+		log.Info().Str("address", tcpconn.RemoteAddr().String()).Msg("connected")
 
 		conn := telnet.Server(tcpconn)
-
-		conn.AddListener("update-option", telnet.FuncListener{
-			Func: func(event any) {
-				switch t := event.(type) {
-				case telnet.UpdateOptionEvent:
-					switch opt := t.Option; opt.Byte() {
-					case telnet.Charset:
-						if t.WeChanged && opt.EnabledForUs() {
-							t.Conn().RequestEncoding(unicode.UTF8)
-						}
-					}
-				}
-			},
-		})
-
-		for _, opt := range []telnet.Option{
-			telnet.NewSuppressGoAheadOption(),
-			telnet.NewTransmitBinaryOption(),
-			telnet.NewCharsetOption(true),
-		} {
-			opt.Allow(true, true)
-			conn.BindOption(opt)
-			conn.EnableOptionForThem(opt.Byte(), true)
-			conn.EnableOptionForUs(opt.Byte(), true)
+		session := newSession(conn)
+		if err := session.negotiateOptions(); err != nil {
+			log.Debug().Err(err).
+				Str("address", tcpconn.RemoteAddr().String()).
+				Msg("error negotiating telnet options")
+		} else {
+			go func() {
+				err := session.runForever()
+				log.Info().Err(err).
+					Str("address", tcpconn.RemoteAddr().String()).
+					Msg("disconnected")
+			}()
 		}
-
-		go io.Copy(conn, conn)
 	}
 }
